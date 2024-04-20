@@ -4,7 +4,8 @@ import json
 import random
 from pathlib import Path
 
-import ui
+import window
+from prompt_toolkit.key_binding import KeyBindings
 
 class LocalPlayer:
     def __init__(self):
@@ -35,32 +36,29 @@ class LocalPlayer:
                 json.dump(self.db, f, ensure_ascii=False)
 
     def play(self):
-        if self.state == 'idle':
-            file = self.music_list[self.music_index]['file']
-            self.media = vlc.MediaPlayer(file)
-            self.media.play()
-            self.wait(lambda : self.media.get_state() == vlc.State.Playing)
-            self.state = 'playing'
-        elif self.state == 'playing':
+        file = self.music_list[self.music_index]['file']
+        self.media = vlc.MediaPlayer(file)
+        self.media.play()
+        self.state = 'playing'
+
+    def pause(self):
+        if self.state == 'playing':
             self.media.pause()
 
     def stop(self):
-        prev_state = self.state
-        self.state = 'idle'
-        if prev_state == 'playing':
-            self.media.stop()
-
-    def exit(self):
         prev_state = self.state
         self.state = 'exit'
         if prev_state == 'playing':
             self.media.stop()
 
+    def is_exit(self):
+        return self.state == 'exit'
+
     def next(self):
         if self.state != 'playing':
             return
 
-        self.media.stop() if self.media else None
+        self.media.stop()
         next_flag = True
         while next_flag:
             if self.music_index + 1 >= len(self.music_list):
@@ -69,14 +67,13 @@ class LocalPlayer:
                 self.music_index += 1
             next_flag = ('delete' in self.music_list[self.music_index])
 
-        self.state = 'idle'
         self.play()
 
     def previous(self):
         if self.state != 'playing':
             return
 
-        self.media.stop() if self.media else None
+        self.media.stop()
         prev_flag = True
         while prev_flag:
             if self.music_index <= 0:
@@ -85,7 +82,6 @@ class LocalPlayer:
                 self.music_index -= 1
             prev_flag = ('delete' in self.music_list[self.music_index])
 
-        self.state = 'idle'
         self.play()
 
     def fast_forward(self):
@@ -139,10 +135,6 @@ class LocalPlayer:
         music = self.music_list[self.music_index]
         music['delete'] = 0
 
-    def wait(self, condition):
-        while not condition():
-            time.sleep(0.01)
-
     def get_title(self):
         total_time = self.media.get_length() // 1000
         minutes = total_time // 60
@@ -152,7 +144,81 @@ class LocalPlayer:
             music['rate'] = 0
         return f"[{minutes:02d}:{seconds:02d}] [{music['singer']}] [{music['name']}] [{music['rate']}]"
 
+    def get_count(self):
+        return len(self.music_list)
+
+    def get_music_time(self):
+        return self.media.get_time()
+
+    def get_music_length(self):
+        return self.media.get_length()
+
+    def is_end(self):
+        state = self.media.get_state()
+        match state:
+            case vlc.State.Stopped:
+                return True
+            case vlc.State.Ended:
+                self.next()
+                return True
+            case _:
+                return False
+
+    def wait_play(self):
+        while self.media.get_state() != vlc.State.Playing:
+            time.sleep(0.01)
+
+    def get_keybindings(self):
+        kb = KeyBindings()
+
+        @kb.add('right')
+        def do_fast_forward(event):
+            self.fast_forward()
+
+        @kb.add('left')
+        def do_fast_backard(event):
+            self.fast_backward()
+
+        @kb.add('p')
+        def do_pause(event):
+            self.pause()
+
+        @kb.add('space')
+        def _(event):
+            do_pause(event)
+
+        @kb.add('n')
+        def do_next(event):
+            self.next()
+
+        @kb.add('N')
+        def do_previus(event):
+            self.previous()
+
+        @kb.add('up')
+        def do_up_volume(event):
+            self.up_volume()
+
+        @kb.add('down')
+        def do_down_volume(event):
+            self.down_volume()
+
+        @kb.add('=')
+        def do_add_rate(event):
+            self.add_rate()
+
+        @kb.add('-')
+        def do_sub_rate(event):
+            self.sub_rate()
+
+        @kb.add('delete')
+        def do_delete(event):
+            self.drop()
+
+        return kb
+
     def run(self):
-        window = ui.CmdUI(self)
-        window.loop()
+        self.play()
+        with window.PlayerWindow(self, self.get_keybindings()) as pb:
+            pb.loop()
         self.save_db()
