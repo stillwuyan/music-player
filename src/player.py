@@ -5,7 +5,6 @@ import random
 from pathlib import Path
 
 import window
-from prompt_toolkit.key_binding import KeyBindings
 
 class LocalPlayer:
     def __init__(self):
@@ -38,6 +37,26 @@ class LocalPlayer:
     def play(self):
         file = self.music_list[self.music_index]['file']
         self.media = vlc.MediaPlayer(file)
+        self.media.play()
+        self.state = 'playing'
+
+    def play_with_title(self, title):
+        item = None
+        index = 0
+        for idx, music in enumerate(self.music_list):
+            if f"{music['singer']} - {music['name']}" == title:
+                item = music
+                index = idx
+                break
+
+        if item is None:
+            return
+
+        if self.state == 'playing':
+            self.media.stop()
+
+        self.music_index = index
+        self.media = vlc.MediaPlayer(item['file'])
         self.media.play()
         self.state = 'playing'
 
@@ -135,6 +154,11 @@ class LocalPlayer:
         music = self.music_list[self.music_index]
         music['delete'] = 0
 
+    def get_header(self):
+        total = len(self.music_list)
+        index = self.music_index
+        return f"total: {total}, index: {index+1}"
+
     def get_title(self):
         total_time = self.media.get_length() // 1000
         minutes = total_time // 60
@@ -153,6 +177,9 @@ class LocalPlayer:
     def get_music_length(self):
         return self.media.get_length()
 
+    def get_all(self):
+        return [f"{music['singer']} - {music['name']}" for music in self.music_list]
+
     def is_end(self):
         state = self.media.get_state()
         match state:
@@ -168,57 +195,23 @@ class LocalPlayer:
         while self.media.get_state() != vlc.State.Playing:
             time.sleep(0.01)
 
-    def get_keybindings(self):
-        kb = KeyBindings()
-
-        @kb.add('right')
-        def do_fast_forward(event):
-            self.fast_forward()
-
-        @kb.add('left')
-        def do_fast_backard(event):
-            self.fast_backward()
-
-        @kb.add('p')
-        def do_pause(event):
-            self.pause()
-
-        @kb.add('space')
-        def _(event):
-            do_pause(event)
-
-        @kb.add('n')
-        def do_next(event):
-            self.next()
-
-        @kb.add('N')
-        def do_previus(event):
-            self.previous()
-
-        @kb.add('up')
-        def do_up_volume(event):
-            self.up_volume()
-
-        @kb.add('down')
-        def do_down_volume(event):
-            self.down_volume()
-
-        @kb.add('=')
-        def do_add_rate(event):
-            self.add_rate()
-
-        @kb.add('-')
-        def do_sub_rate(event):
-            self.sub_rate()
-
-        @kb.add('delete')
-        def do_delete(event):
-            self.drop()
-
-        return kb
+    def get_keymap(self):
+        return (
+            ('right', self.fast_forward),
+            ('left', self.fast_backward),
+            ('p', self.pause),
+            ('space', self.pause),
+            ('n', self.next),
+            ('N', self.previous),
+            ('up', self.up_volume),
+            ('down', self.down_volume),
+            ('=', self.add_rate),
+            ('delete', self.drop),
+            ('-', self.sub_rate),
+        )
 
     def run(self):
         self.play()
-        with window.PlayerWindow(self, self.get_keybindings()) as pb:
+        with window.PlayerWindow(self, self.get_keymap()) as pb:
             pb.loop()
         self.save_db()

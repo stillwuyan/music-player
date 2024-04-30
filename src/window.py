@@ -45,6 +45,9 @@ from prompt_toolkit.shortcuts.progress_bar.formatters import Formatter, Bar, Tex
 from prompt_toolkit.shortcuts.progress_bar import ProgressBarCounter
 from prompt_toolkit.shortcuts import clear
 
+from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.completion import WordCompleter
+
 _T = TypeVar("_T")
 
 E = KeyPressEvent
@@ -87,9 +90,10 @@ class PlayerWindow:
     def __init__(
         self,
         player: _T,
-        key_bindings: KeyBindings | None = None,
+        keymap: Iterable[_T],
     ) -> None:
         self.player = player
+        self.header = None
         self.title = None
         self.formatters = [
             PlayTime(self.player),
@@ -105,19 +109,12 @@ class PlayerWindow:
             ' <b>[&lt;-]</b> FB'
             ' <b>[c-c]</b> Exit')
         self.counters: list[ProgressBarCounter[object]] = []
-        self.style = None
-        self.key_bindings = key_bindings
-        self.cancel_callback = self.player.stop
+        self.key_bindings = KeyBindings()
+        @self.key_bindings.add('c-c')
+        def _(event):
+            self.player.stop()
 
-        # If no `cancel_callback` was given, and we're creating the progress
-        # bar from the main thread. Cancel by sending a `KeyboardInterrupt` to
-        # the main thread.
-        if self.cancel_callback is None and in_main_thread():
-
-            def keyboard_interrupt_to_main_thread() -> None:
-                os.kill(os.getpid(), signal.SIGINT)
-
-            self.cancel_callback = keyboard_interrupt_to_main_thread
+        self.keymap = keymap
 
         # Note that we use __stderr__ as default error output, because that
         # works best with `patch_stdout`.
@@ -129,6 +126,14 @@ class PlayerWindow:
 
     def __enter__(self) -> ProgressBar:
         # Create UI Application.
+        header_toolbar = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: self.header),
+                height=1,
+            ),
+            filter=Condition(lambda: self.header is not None),
+        )
+
         title_toolbar = ConditionalContainer(
             Window(
                 FormattedTextControl(lambda: self.title),
@@ -137,6 +142,22 @@ class PlayerWindow:
             ),
             filter=Condition(lambda: self.title is not None),
         )
+
+        completer = WordCompleter(self.player.get_all(), ignore_case=True, match_middle=True)
+        search_toolbar = TextArea(
+            height=1,
+            prompt="Search: ",
+            style="class:input-field",
+            multiline=False,
+            wrap_lines=False,
+            completer=completer,
+        )
+
+        def accept(buff):
+            output = search_toolbar.text
+            self.player.play_with_title(output)
+
+        search_toolbar.accept_handler = accept
 
         bottom_toolbar = ConditionalContainer(
             Window(
@@ -158,17 +179,36 @@ class PlayerWindow:
 
         progress_controls = [
             Window(
-                content=_ProgressControl(self, f, self.cancel_callback),
+                content=_ProgressControl(self, f, self.keymap),
                 width=functools.partial(width_for_formatter, f),
             )
             for f in self.formatters
         ]
+
+        self.style = Style(
+            [
+                ("input-field", "bg:#000044 #ffffff"),
+            ]
+        )
+
+        @self.key_bindings.add("/")
+        def search(event: E) -> None:
+            event.app.layout.focus(search_toolbar)
+
+        @self.key_bindings.add("f3")
+        def _(event: E) -> None:
+            search(event)
+
+        @self.key_bindings.add("escape")
+        def exit_search(event: E) -> None:
+            event.app.layout.focus(next(event.app.layout.get_focusable_windows()))
 
         self.app: Application[None] = Application(
             min_redraw_interval=0.05,
             layout=Layout(
                 HSplit(
                     [
+                        header_toolbar,
                         title_toolbar,
                         VSplit(
                             progress_controls,
@@ -177,9 +217,10 @@ class PlayerWindow:
                             ),
                         ),
                         Window(),
+                        search_toolbar,
                         bottom_toolbar,
                     ]
-                )
+                ),
             ),
             style=self.style,
             key_bindings=self.key_bindings,
@@ -221,6 +262,7 @@ class PlayerWindow:
     def loop(self):
         while not self.player.is_exit():
             self.player.wait_play()
+            self.header = self.player.get_header()
             self.title = self.player.get_title()
             for i in self(MusicRange(self.player), remove_when_done=True):
                 pass
@@ -251,24 +293,22 @@ class PlayerWindow:
     def invalidate(self) -> None:
         self.app.invalidate()
 
-def create_key_bindings(cancel_callback: Callable[[], None] | None) -> KeyBindings:
+def create_key_bindings(keymap: Iterable[_T]) -> KeyBindings:
     """
     Key bindings handled by the progress bar.
     (The main thread is not supposed to handle any key bindings.)
     """
     kb = KeyBindings()
+    for key, func in keymap:
+        def wrap(func):
+            def _do(event: Event) -> None:
+                func()
+            return _do
+        kb.add(key)(wrap(func))
 
     @kb.add("c-l")
     def _clear(event: E) -> None:
         event.app.renderer.clear()
-
-    if cancel_callback is not None:
-
-        @kb.add("c-c")
-        def _interrupt(event: E) -> None:
-            "Kill the 'body' of the progress bar, but only if we run from the main thread."
-            assert cancel_callback is not None
-            cancel_callback()
 
     return kb
 
@@ -281,11 +321,11 @@ class _ProgressControl(UIControl):
         self,
         progress_bar: ProgressBar,
         formatter: Formatter,
-        cancel_callback: Callable[[], None] | None,
+        keymap: Iterable[_T],
     ) -> None:
         self.progress_bar = progress_bar
         self.formatter = formatter
-        self._key_bindings = create_key_bindings(cancel_callback)
+        self._key_bindings = create_key_bindings(keymap)
 
     def create_content(self, width: int, height: int) -> UIContent:
         items: list[StyleAndTextTuples] = []
